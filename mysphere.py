@@ -9,7 +9,7 @@ class Example:
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 10
+        self.sim_substeps = 40
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder = newton.ModelBuilder()
@@ -25,7 +25,7 @@ class Example:
         print("Feeding Newton:", len(verts), "verts,", len(indices)//4, "tets")
 
         builder.add_soft_mesh(
-            pos=wp.vec3(0.0, 1.0, 0.0),
+            pos=wp.vec3(0.0, 2.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
