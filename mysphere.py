@@ -25,23 +25,23 @@ class Example:
         print("Feeding Newton:", len(verts), "verts,", len(indices)//4, "tets")
 
         builder.add_soft_mesh(
-            pos=wp.vec3(0.0, 55.0, 0.0),
+            pos=wp.vec3(0.0, 53.5, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
             vertices=verts,
             indices=indices,
             density=1.0e3,
-            k_mu=5.0e4,
-            k_lambda=5.0e4,
+            k_mu=1.03e4,
+            k_lambda=9.3e4,
             k_damp=5.0e-1,
         )
 
         builder.color()
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e4
-        self.model.soft_contact_kd = 1.0e2
+        self.model.soft_contact_ke = 1.0e3
+        self.model.soft_contact_kd = 1.0e1
         self.model.soft_contact_mu = 1.0
 
         self.solver = newton.solvers.SolverVBD(

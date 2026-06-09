@@ -1,0 +1,89 @@
+import warp as wp
+import newton
+import newton.examples
+import numpy as np
+
+class Example:
+    def __init__(self, viewer, args):
+        self.viewer = viewer
+        self.sim_time = 0.0
+        self.fps = 60
+        self.frame_dt = 1.0 / self.fps
+        self.sim_substeps = 80
+        self.sim_dt = self.frame_dt / self.sim_substeps
+
+        builder = newton.ModelBuilder()
+        builder.gravity = 0.0
+
+        nodes = np.load("/workspace/tet_nodes.npy")
+        elems = np.load("/workspace/tet_elems.npy")
+        self.nodes = nodes
+
+        verts = [wp.vec3(float(p[0]), float(p[1]), float(p[2])) for p in nodes]
+        indices = [int(i) for i in elems.flatten()]
+        print("Feeding Newton:", len(verts), "verts,", len(indices)//4, "tets")
+
+        builder.add_soft_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0), rot=wp.quat_identity(), scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0), vertices=verts, indices=indices,
+            density=1.0e3, k_mu=1.03e4, k_lambda=9.3e4, k_damp=5.0e-1,
+        )
+        builder.color()
+        self.model = builder.finalize()
+
+        self.solver = newton.solvers.SolverVBD(
+            model=self.model, iterations=10,
+            particle_enable_self_contact=False, particle_enable_tile_solve=False,
+        )
+
+        self.state_0 = self.model.state()
+        self.state_1 = self.model.state()
+        self.control = self.model.control()
+        self.contacts = self.model.contacts()
+
+        # apply the poke: top slab gets a downward velocity
+        vel = self.state_0.particle_qd.numpy()
+        top = nodes[:,1] > nodes[:,1].max() - 5
+        vel[top,1] = -5.0
+        self.state_0.particle_qd = wp.array(vel, dtype=wp.vec3)
+
+        self.viewer.set_model(self.model)
+        self.capture()
+
+    def capture(self):
+        if wp.get_device().is_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
+
+    def simulate(self):
+        for _ in range(self.sim_substeps):
+            self.state_0.clear_forces()
+            self.viewer.apply_forces(self.state_0)
+            self.model.collide(self.state_0, self.contacts)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.state_0, self.state_1 = self.state_1, self.state_0
+
+    def step(self):
+        if self.graph:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
+        self.sim_time += self.frame_dt
+
+    def render(self):
+        self.viewer.begin_frame(self.sim_time)
+        self.viewer.log_state(self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.end_frame()
+
+    @staticmethod
+    def create_parser():
+        return newton.examples.create_parser()
+
+if __name__ == "__main__":
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
+    newton.examples.run(Example(viewer, args), args)

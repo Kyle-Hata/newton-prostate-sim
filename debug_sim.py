@@ -13,7 +13,7 @@ indices = [int(i) for i in elems.flatten()]
 builder.add_soft_mesh(
     pos=wp.vec3(0.0, 55.0, 0.0), rot=wp.quat_identity(), scale=1.0,
     vel=wp.vec3(0.0,0.0,0.0), vertices=verts, indices=indices,
-    density=1.0e3, k_mu=5.0e4, k_lambda=5.0e4, k_damp=5.0e-1,
+    density=1.0e3, k_mu=1.03e4, k_lambda=9.3e4, k_damp=5.0e-1,
 )
 builder.color()
 model = builder.finalize()
