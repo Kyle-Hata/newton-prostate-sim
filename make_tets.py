@@ -15,7 +15,7 @@ print("Tet mesh:", len(nodes), "points,", len(elems), "tetrahedra")
 
 # center + scale so it behaves like the earlier shapes
 nodes = nodes - nodes.mean(axis=0)
-scale = 0.5 / np.max(np.abs(nodes))
+scale = 1.0  # keep real-world size, do not shrink
 nodes = nodes * scale
 print("Scaled + centered. Max extent:", np.max(np.abs(nodes)))
 

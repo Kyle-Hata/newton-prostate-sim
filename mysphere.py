@@ -9,7 +9,7 @@ class Example:
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 40
+        self.sim_substeps = 80
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder = newton.ModelBuilder()
@@ -25,23 +25,23 @@ class Example:
         print("Feeding Newton:", len(verts), "verts,", len(indices)//4, "tets")
 
         builder.add_soft_mesh(
-            pos=wp.vec3(0.0, 2.0, 0.0),
+            pos=wp.vec3(0.0, 55.0, 0.0),
             rot=wp.quat_identity(),
             scale=1.0,
             vel=wp.vec3(0.0, 0.0, 0.0),
             vertices=verts,
             indices=indices,
             density=1.0e3,
-            k_mu=1.0e5,
-            k_lambda=1.0e5,
-            k_damp=1.0e-3,
+            k_mu=5.0e4,
+            k_lambda=5.0e4,
+            k_damp=5.0e-1,
         )
 
         builder.color()
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 0
+        self.model.soft_contact_ke = 1.0e4
+        self.model.soft_contact_kd = 1.0e2
         self.model.soft_contact_mu = 1.0
 
         self.solver = newton.solvers.SolverVBD(
