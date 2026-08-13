@@ -12,7 +12,14 @@
 
 import warp as wp, newton, numpy as np, pyvista as pv, tetgen
 
+@wp.kernel
+def damp_vel(qd: wp.array(dtype=wp.vec3), f: float):
+    i = wp.tid()
+    qd[i] = qd[i] * f
+
+
 NEEDLE_SPEED = 10.0
+SETTLE_FRAMES = 20
 FRAMES = 150
 OUT = "/workspace/full_scene_xpbd.usd"
 
@@ -22,33 +29,50 @@ SOFT = {
     "Rectum":   dict(k_mu=8.0e2,  k_lambda=7.0e3),
     "Urethra":  dict(k_mu=1.03e4, k_lambda=9.3e4),
 }
-BONES = ["Bone_1", "Bone_2"]
+STATIC = ["Bone_1", "Bone_2", "Diaphragm"]  # Diaphragm = pelvic-floor sheet here; static context
+
+def read_organ(name):
+    # prefer the Segmentation_ export set so every organ shares one frame;
+    # the repo's standalone Prostate.stl is a different, older export
+    for fn in (f"Segmentation_of_prostate_{name}.stl", f"{name}.stl"):
+        try:
+            return pv.read(fn).clean().triangulate()
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"no STL for {name}")
 
 surfs = {}
 for name in SOFT:
-    surfs[name] = pv.read(f"{name}.stl").clean().triangulate()
+    surfs[name] = read_organ(name)
 
 pro = surfs["Prostate"]
 ctr = np.array(pro.center)
 top_z, bot_z = float(pro.bounds[5]), float(pro.bounds[4])
-candidates = {
-    "superior descending":     (np.array([ctr[0], ctr[1], top_z + 17.0]), -1.0),
-    "transperineal ascending": (np.array([ctr[0], ctr[1], bot_z - 17.0]), +1.0),
-}
+others = [n for n in SOFT if n != "Prostate"]
+def path_crossings(start, end):
+    return [n for n in others if len(surfs[n].ray_trace(start, end)[0]) > 0]
 best = None
-for label, (start, sgn) in candidates.items():
-    blockers = [n for n in ("Bladder", "Rectum")
-                if len(surfs[n].ray_trace(start, ctr)[0]) > 0]
-    print(f"approach {label}: crosses {blockers if blockers else 'nothing'}")
-    if best is None or len(blockers) < best[3]:
-        best = (label, start, sgn, len(blockers))
-label, needle_start_np, sgn, _ = best
-print(f"chosen approach: {label}")
+for dx in (0.0, -6.0, 6.0, -10.0, 10.0):
+    for dy in (0.0, 6.0, -6.0, 10.0, -10.0):
+        for label, z0, sgn in (("transperineal ascending", bot_z - 17.0, +1.0),
+                               ("superior descending", top_z + 17.0, -1.0)):
+            start = np.array([ctr[0] + dx, ctr[1] + dy, z0])
+            end = np.array([start[0], start[1], ctr[2]])
+            if len(pro.ray_trace(start, end)[0]) == 0:
+                continue
+            blk = path_crossings(start, end)
+            score = (len(blk), abs(dx) + abs(dy), 0 if sgn > 0 else 1)
+            if best is None or score < best[0]:
+                best = (score, label, start, sgn, blk)
+score, label, needle_start_np, sgn, blk = best
+print(f"chosen approach: {label} at offset "
+      f"({needle_start_np[0]-ctr[0]:+.0f},{needle_start_np[1]-ctr[1]:+.0f}) "
+      f"crosses {blk if blk else 'nothing'}")
 
 builder = newton.ModelBuilder()
 builder.gravity = 0.0
 builder.particle_max_velocity = 1.0e3
-builder.default_particle_radius = 1.0
+builder.default_particle_radius = 0.5
 
 ranges = {}
 for name, mat in SOFT.items():
@@ -64,9 +88,9 @@ for name, mat in SOFT.items():
 
 shape_cfg = newton.ModelBuilder.ShapeConfig(
     density=1000.0, ke=1.0e3, kd=10.0, kf=1.0e3, mu=0.5)
-for name in BONES:
+for name in STATIC:
     try:
-        bm = pv.read(f"{name}.stl").clean().triangulate()
+        bm = read_organ(name)
     except FileNotFoundError:
         print(f"SKIPPED missing {name}.stl")
         continue
@@ -93,11 +117,27 @@ control, contacts = model.control(), model.contacts()
 drive = wp.array(np.array([[0, 0, sgn * NEEDLE_SPEED, 0, 0, 0]], dtype=np.float32),
                  dtype=wp.spatial_vector)
 
+dt = (1.0 / 60) / 80
+zero_drive = wp.zeros(1, dtype=wp.spatial_vector)
+p_raw = s0.particle_q.numpy().copy()
+for frame in range(SETTLE_FRAMES):
+    for _ in range(80):
+        wp.copy(s0.body_qd, zero_drive)
+        s0.clear_forces()
+        model.collide(s0, contacts)
+        solver.step(s0, s1, control, contacts, dt)
+        s0, s1 = s1, s0
+        wp.launch(damp_vel, dim=model.particle_count, inputs=[s0.particle_qd, 0.2])
+    if frame % 5 == 0 or frame == SETTLE_FRAMES - 1:
+        p = s0.particle_q.numpy()
+        print(f"settle {frame:2d}  drift={np.linalg.norm(p - p_raw, axis=1).max():5.2f}mm  "
+              f"finite={np.isfinite(p).all()}")
+wp.launch(damp_vel, dim=model.particle_count, inputs=[s0.particle_qd, 0.0])
+
 viewer = newton.viewer.ViewerUSD(output_path=OUT, fps=60)
 viewer.set_model(model)
 
 p_rest = s0.particle_q.numpy().copy()
-dt = (1.0 / 60) / 80
 nc = 0
 for frame in range(FRAMES):
     for sub in range(80):
