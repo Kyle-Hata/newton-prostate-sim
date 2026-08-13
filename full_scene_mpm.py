@@ -17,7 +17,14 @@
 import numpy as np, warp as wp, newton, pyvista as pv
 from newton.solvers import SolverImplicitMPM
 
+@wp.kernel
+def damp_vel(qd: wp.array(dtype=wp.vec3), f: float):
+    i = wp.tid()
+    qd[i] = qd[i] * f
+
+
 NEEDLE_SPEED = 10.0
+SETTLE_FRAMES = 20
 FRAMES = 150
 FPS = 60
 SUBSTEPS = 4
@@ -32,26 +39,43 @@ SOFT = {
     "Rectum":   dict(E=2.3e3,  color=(0.70, 0.50, 0.60)),
     "Urethra":  dict(E=3.07e4, color=(0.40, 0.75, 0.65)),
 }
-BONES = ["Bone_1", "Bone_2"]
+STATIC = ["Bone_1", "Bone_2", "Diaphragm"]  # Diaphragm = pelvic-floor sheet here; static context
 
-surfs = {name: pv.read(f"{name}.stl").clean().triangulate() for name in SOFT}
+def read_organ(name):
+    # prefer the Segmentation_ export set so every organ shares one frame;
+    # the repo's standalone Prostate.stl is a different, older export
+    for fn in (f"Segmentation_of_prostate_{name}.stl", f"{name}.stl"):
+        try:
+            return pv.read(fn).clean().triangulate()
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"no STL for {name}")
+
+surfs = {name: read_organ(name) for name in SOFT}
 
 pro = surfs["Prostate"]
 ctr = np.array(pro.center)
 top_z, bot_z = float(pro.bounds[5]), float(pro.bounds[4])
-candidates = {
-    "superior descending":     (np.array([ctr[0], ctr[1], top_z + 17.0]), -1.0),
-    "transperineal ascending": (np.array([ctr[0], ctr[1], bot_z - 17.0]), +1.0),
-}
+others = [n for n in SOFT if n != "Prostate"]
+def path_crossings(start, end):
+    return [n for n in others if len(surfs[n].ray_trace(start, end)[0]) > 0]
 best = None
-for label, (start, sgn) in candidates.items():
-    blockers = [n for n in ("Bladder", "Rectum")
-                if len(surfs[n].ray_trace(start, ctr)[0]) > 0]
-    print(f"approach {label}: crosses {blockers if blockers else 'nothing'}")
-    if best is None or len(blockers) < best[3]:
-        best = (label, start, sgn, len(blockers))
-label, needle_start_np, sgn, _ = best
-print(f"chosen approach: {label}")
+for dx in (0.0, -6.0, 6.0, -10.0, 10.0):
+    for dy in (0.0, 6.0, -6.0, 10.0, -10.0):
+        for label, z0, sgn in (("transperineal ascending", bot_z - 17.0, +1.0),
+                               ("superior descending", top_z + 17.0, -1.0)):
+            start = np.array([ctr[0] + dx, ctr[1] + dy, z0])
+            end = np.array([start[0], start[1], ctr[2]])
+            if len(pro.ray_trace(start, end)[0]) == 0:
+                continue
+            blk = path_crossings(start, end)
+            score = (len(blk), abs(dx) + abs(dy), 0 if sgn > 0 else 1)
+            if best is None or score < best[0]:
+                best = (score, label, start, sgn, blk)
+score, label, needle_start_np, sgn, blk = best
+print(f"chosen approach: {label} at offset "
+      f"({needle_start_np[0]-ctr[0]:+.0f},{needle_start_np[1]-ctr[1]:+.0f}) "
+      f"crosses {blk if blk else 'nothing'}")
 
 def sample_inside(surf):
     lo = np.array(surf.bounds[0::2]); hi = np.array(surf.bounds[1::2])
@@ -79,9 +103,9 @@ for name in SOFT:
     print(f"soft: {name} ({len(pts)} particles)")
 
 shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
-for name in BONES:
+for name in STATIC:
     try:
-        bm = pv.read(f"{name}.stl").clean().triangulate()
+        bm = read_organ(name)
     except FileNotFoundError:
         print(f"SKIPPED missing {name}.stl")
         continue
@@ -112,11 +136,28 @@ s0, s1 = model.state(), model.state()
 drive = wp.array(np.array([[0, 0, sgn * NEEDLE_SPEED, 0, 0, 0]], dtype=np.float32),
                  dtype=wp.spatial_vector)
 
+dt = 1.0 / (FPS * SUBSTEPS)
+zero_drive = wp.zeros(1, dtype=wp.spatial_vector)
+pose0 = np.array([[float(needle_start_np[0]), float(needle_start_np[1]),
+                   float(needle_start_np[2]), 0, 0, 0, 1]], dtype=np.float32)
+pose0_wp = wp.array(pose0, dtype=wp.transform)
+p_raw = s0.particle_q.numpy().copy()
+for frame in range(SETTLE_FRAMES):
+    for _ in range(SUBSTEPS):
+        for st in (s0, s1):
+            wp.copy(st.body_q, pose0_wp)
+            wp.copy(st.body_qd, zero_drive)
+        solver.step(s0, s1, None, None, dt)
+        s0, s1 = s1, s0
+    if frame % 5 == 0 or frame == SETTLE_FRAMES - 1:
+        p = s0.particle_q.numpy()
+        print(f"settle {frame:2d}  drift={np.linalg.norm(p - p_raw, axis=1).max():5.2f}mm  "
+              f"finite={np.isfinite(p).all()}")
+
 viewer = newton.viewer.ViewerUSD(output_path=OUT, fps=FPS)
 viewer.set_model(model)
 
 p_rest = s0.particle_q.numpy().copy()
-dt = 1.0 / (FPS * SUBSTEPS)
 needle_z = float(needle_start_np[2])
 for frame in range(FRAMES):
     for _ in range(SUBSTEPS):
