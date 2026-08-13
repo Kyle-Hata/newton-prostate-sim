@@ -44,7 +44,7 @@ STATIC = ["Bone_1", "Bone_2", "Diaphragm"]  # Diaphragm = pelvic-floor sheet her
 def read_organ(name):
     # prefer the Segmentation_ export set so every organ shares one frame;
     # the repo's standalone Prostate.stl is a different, older export
-    for fn in (f"Segmentation_of_prostate_{name}.stl", f"{name}.stl"):
+    for fn in (f"Segmentation_of_prostate_{name}.stl", f"Segmentation of prostate_{name}.stl", f"{name}.stl"):
         try:
             return pv.read(fn).clean().triangulate()
         except FileNotFoundError:
