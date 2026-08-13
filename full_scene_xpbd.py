@@ -34,7 +34,7 @@ STATIC = ["Bone_1", "Bone_2", "Diaphragm"]  # Diaphragm = pelvic-floor sheet her
 def read_organ(name):
     # prefer the Segmentation_ export set so every organ shares one frame;
     # the repo's standalone Prostate.stl is a different, older export
-    for fn in (f"Segmentation_of_prostate_{name}.stl", f"{name}.stl"):
+    for fn in (f"Segmentation_of_prostate_{name}.stl", f"Segmentation of prostate_{name}.stl", f"{name}.stl"):
         try:
             return pv.read(fn).clean().triangulate()
         except FileNotFoundError:
@@ -132,6 +132,26 @@ for frame in range(SETTLE_FRAMES):
         p = s0.particle_q.numpy()
         print(f"settle {frame:2d}  drift={np.linalg.norm(p - p_raw, axis=1).max():5.2f}mm  "
               f"finite={np.isfinite(p).all()}")
+# stage 2: light damping until residual overlap stops moving the scene
+prev = s0.particle_q.numpy().copy()
+for frame in range(60):
+    for _ in range(80):
+        wp.copy(s0.body_qd, zero_drive)
+        s0.clear_forces()
+        model.collide(s0, contacts)
+        solver.step(s0, s1, control, contacts, dt)
+        s0, s1 = s1, s0
+        wp.launch(damp_vel, dim=model.particle_count, inputs=[s0.particle_qd, 0.9])
+    p = s0.particle_q.numpy()
+    step_move = float(np.linalg.norm(p - prev, axis=1).max())
+    prev = p.copy()
+    ncr = int(contacts.soft_contact_count.numpy()[0])
+    if frame % 5 == 0:
+        print(f"relax  {frame:2d}  per-frame move={step_move:5.3f}mm  contacts={ncr:5d}  "
+              f"finite={np.isfinite(p).all()}")
+    if step_move < 0.05:
+        print(f"relaxed after {frame + 1} extra frames (per-frame move {step_move:.3f}mm)")
+        break
 wp.launch(damp_vel, dim=model.particle_count, inputs=[s0.particle_qd, 0.0])
 
 viewer = newton.viewer.ViewerUSD(output_path=OUT, fps=60)
